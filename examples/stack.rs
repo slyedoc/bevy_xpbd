@@ -7,71 +7,84 @@ use bevy_xpbd::*;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        // our physics plugin
-        .add_plugin(HelperPlugin)
-        .add_plugin(XpbdPlugin)
+        .add_plugin(HelperPlugin) // Utitlity plugins for quality of life
+        .add_plugin(XpbdPlugin::default()) // Our physics plugin
         //.add_plugin(PhysicsDebugPlugin)
         // local setup stuff
-        .add_startup_system(setup_camera)
-        .add_startup_system(setup)
+        .add_systems(Startup, setup_scene)
+        .add_systems(OnEnter(ResetState::Playing), setup)
         .run();
 }
 
-pub fn setup_camera(mut commands: Commands) {
+pub fn setup_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     // light
-    commands
-        .spawn(DirectionalLightBundle {
+    commands.spawn((
+        DirectionalLightBundle {
             transform: Transform::from_xyz(50.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
             directional_light: DirectionalLight {
                 shadows_enabled: true,
                 ..default()
             },
             ..default()
-        })
-        .insert(Keep);
+        },
+        Keep,
+        Name::new("Light"),
+    ));
 
-    commands
-        .spawn(Camera3dBundle {
+    commands.spawn((
+        Camera3dBundle {
             transform: Transform::from_xyz(0.0, 2.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
-        })
-        // Add our controller
-        .insert(CameraController)
-        .insert(Keep);
+        },
+        CameraController,
+        Keep,
+        Name::new("Camera"),
+    ));
+
+    let ground_radius = 100.;
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::UVSphere {
+                radius: ground_radius,
+                ..default()            
+            })),
+            material: materials.add(StandardMaterial {
+                base_color: Color::DARK_GREEN,
+                ..default()
+            }),
+            transform: Transform {
+                translation: Vec3::new(0., -ground_radius, 0.),
+                ..default()
+            },
+            ..default()
+        },
+        PhysicsBundle {
+            collider: Collider::new_sphere(ground_radius),
+            mass: Mass::Static,
+            ..default()
+        },
+        Keep,
+        Name::new("Ground"),
+    ));
 }
 
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
-    // Ground
-    commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Box::new(100., 1., 100.))),
-            material: materials.add(StandardMaterial {
-                base_color: Color::DARK_GREEN,
-                ..default()
-            }),
-            transform: Transform {
-                translation: Vec3::new(0., -1.0, 0.),
-                ..default()
-            },
-            ..default()
-        })
-        .insert(PhysicsBundle {
-            collider: Collider::new_box(100., 1., 100.),
-            ..default()
-        })
-        .insert(Name::new("Ground"));
-
-    // stack
-
     let radius = 0.5;
-    let count = 10;
+    let count = 4;
 
+    let texture = asset_server.load("checker_red.png");
     let mat = materials.add(StandardMaterial {
-        base_color: Color::WHITE,    
+        base_color: Color::WHITE,
+        base_color_texture: Some(texture),
         ..default()
     });
 
@@ -83,25 +96,26 @@ pub fn setup(
     for x in 0..count {
         for y in 0..count {
             for z in 0..count {
-                commands
-                    .spawn(PbrBundle {
+                commands.spawn((
+                    PbrBundle {
                         mesh: mesh.clone(),
                         material: mat.clone(),
                         transform: Transform {
                             translation: Vec3::new(
                                 radius * 2. * x as f32,
-                                radius * 2. * y as f32,
+                                radius * 2. * y as f32 + 5.,
                                 radius * 2. * z as f32,
                             ),
                             ..default()
                         },
                         ..default()
-                    })
-                    .insert(PhysicsBundle {
+                    },
+                    PhysicsBundle {
                         collider: Collider::new_sphere(radius),
                         ..default()
-                    })
-                    .insert(Name::new("Sphere"));
+                    },
+                    Name::new("Sphere"),
+                ));
             }
         }
     }

@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Debug, Default, Deref, DerefMut)]
 #[reflect(Component)]
-pub struct Velocity {
-    pub linear: Vec3,
-    pub angular: Vec3,
-}
+pub struct LinearVelocity( pub Vec3);
+
+#[derive(Component, Reflect, Debug, Default, Deref, DerefMut)]
+#[reflect(Component)]
+pub struct AngularVelocity(pub Vec3);

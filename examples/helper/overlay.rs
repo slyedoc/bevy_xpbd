@@ -11,8 +11,8 @@ pub struct OverlayPlugin;
 impl Plugin for OverlayPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugin(FrameTimeDiagnosticsPlugin::default())
-            .add_startup_system(setup_overlay)
-            .add_system(update_fps);
+            .add_systems( Startup, setup_overlay)
+            .add_systems( Update, update_fps);
     }
 }
 
@@ -35,11 +35,8 @@ fn setup_overlay(mut commands: Commands, asset_server: Res<AssetServer>) {
         .spawn(TextBundle {
             style: Style {
                 position_type: PositionType::Absolute,
-                position: UiRect {
-                    left: Val::Px(10.),
-                    bottom: Val::Px(10.),
-                    ..Default::default()
-                },
+                left: Val::Px(10.),
+                bottom: Val::Px(10.),                
                 align_self: AlignSelf::FlexEnd,
                 ..Default::default()
             },

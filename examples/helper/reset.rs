@@ -5,8 +5,8 @@ pub struct ResetPlugin;
 impl Plugin for ResetPlugin {
     fn build(&self, app: &mut App) {
         app.add_state::<ResetState>()
-            .add_system(reset_listen.in_set(OnUpdate(ResetState::Playing)))
-            .add_system(reset.in_set(OnUpdate(ResetState::Reset)));
+            .add_systems(Update, reset_listen.run_if(in_state(ResetState::Playing)))
+            .add_systems(Update, reset.run_if(in_state(ResetState::Reset)));
     }
 }
 #[derive(States, PartialEq, Eq, Debug, Clone, Hash, Default)]
@@ -25,7 +25,7 @@ fn reset(
     mut app_state: ResMut<NextState<ResetState>>,
 ) {
     for e in query.iter() {
-        commands.entity(e).despawn();
+        commands.entity(e).despawn_recursive();
     }
     app_state.set(ResetState::Playing);
 }

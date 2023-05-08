@@ -67,14 +67,14 @@ fn update_camera_controller(
     mut mouse_motion: EventReader<MouseMotion>,
     key_input: Res<Input<KeyCode>>,
     mouse_input: Res<Input<MouseButton>>,
-    mut query: Query<(&mut Transform), With<CameraController>>,
+    mut query: Query<&mut Transform, With<CameraController>>,
     mut window_query: Query<&mut Window>,
     mut controls: ResMut<CameraControls>,
 ) {
     let dt = time.delta_seconds();
     let mut window = window_query.single_mut();
 
-    for (mut transform) in query.iter_mut() {
+    for mut transform in query.iter_mut() {
         // Handle look mode
         // Handle key input
         let mut axis_input = Vec3::ZERO;
