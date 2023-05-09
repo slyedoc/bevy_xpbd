@@ -1,4 +1,3 @@
-use crate::components::*;
 use bevy::prelude::*;
 
 #[derive(Debug, Component)]
@@ -43,7 +42,8 @@ impl Collider {
             Collider::Sphere { radius } => *radius,
             Collider::Box { size } => {
                 // find the largest dimension of the box
-                size.x.max(size.y).max(size.z) * 0.5                
+                let a = size.x.max(size.y).max(size.z) * 0.5;                
+                (a.powf(2.0) * 3.).sqrt()
             }
         }
     }

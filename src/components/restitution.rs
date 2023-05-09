@@ -6,6 +6,6 @@ pub struct Restitution(pub f32);
 
 impl Default for Restitution {
     fn default() -> Self {
-        Self(1.)
+        Self(1.0)
     }
 }

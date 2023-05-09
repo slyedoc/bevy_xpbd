@@ -5,7 +5,7 @@ mod spatial_hash;
 pub use components::*;
 pub use config::*;
 
-use bevy::{ecs::query::WorldQuery, prelude::*, utils::Instant};
+use bevy::{ecs::query::WorldQuery, prelude::*};
 use spatial_hash::SpatialHash;
 
 #[derive(Bundle, Default)]
@@ -21,8 +21,7 @@ pub struct PhysicsBundle {
     // Should not be set by user
     pub inertia_tensor: InertiaTensor,
     pub inverse_inertia_tensor: InverseInertiaTensor,
-
-    pub previous: Previous,    
+    pub previous: Previous,
 }
 
 #[derive(WorldQuery)]
@@ -32,7 +31,7 @@ pub struct PhysicsQuery {
     transform: &'static mut Transform,
     linear_velocity: &'static mut LinearVelocity,
     angular_velocity: &'static mut AngularVelocity,
-    mass: &'static mut Mass,    
+    mass: &'static mut Mass,
     inverse_mass: &'static mut InverseMass,
     inertia_tensor: &'static mut InertiaTensor,
     inverse_inertia_tensor: &'static mut InverseInertiaTensor,
@@ -69,8 +68,13 @@ impl Plugin for XpbdPlugin {
             gravity: self.gravity,
         })
         .insert_resource(SpatialHash::new(20.))
-        .add_systems( Update, spawn.run_if(in_state(PhysicsState::Running)).before(simulate))
-        .add_systems( Update, simulate.run_if(in_state(PhysicsState::Running)))
+        .add_systems(
+            Update,
+            spawn
+                .run_if(in_state(PhysicsState::Running))
+                .before(simulate),
+        )
+        .add_systems(Update, simulate.run_if(in_state(PhysicsState::Running)))
         .add_state::<PhysicsState>();
     }
 }
@@ -131,54 +135,64 @@ fn simulate(
         return;
     }
 
-    let t0 = Instant::now();
     // Build spatial hash
     spatial_hash.clear();
     for pb in query.iter() {
-        let radius = pb.collider.bounding_radius()  + (pb.linear_velocity.0 * time.delta_seconds()).length();
-        gizmos.sphere(pb.transform.translation, Quat::IDENTITY, radius, Color::RED.with_a(0.5));
-        spatial_hash.insert(
-            pb.entity,
+        let radius =
+            pb.collider.bounding_radius() + (pb.linear_velocity.0 * time.delta_seconds()).length();
+        gizmos.sphere(
             pb.transform.translation,
+            Quat::IDENTITY,
             radius,
+            Color::RED.with_a(0.5),
         );
+        spatial_hash.insert(pb.entity, pb.transform.translation, radius);
     }
     let collision_pairs = spatial_hash.get_collision_pairs();
-    info!("Spatial hash took: {:?}", t0.elapsed());
+
+    let mut contacts: Vec<(Entity, Entity, Contact)> = Vec::new();
 
     for _ in 0..config.sub_steps {
-        for mut pb in query.iter_mut() {       
+        contacts.clear();
+        for mut pb in query.iter_mut() {
             if pb.inverse_mass.0 == 0. {
                 continue;
-            }     
-            
+            }
+
             // update linear velocity and position
-            pb.previous.translation = pb.transform.translation; 
+            pb.previous.translation = pb.transform.translation;
             pb.linear_velocity.0 += sdt * (config.gravity * pb.inverse_mass.0);
             pb.transform.translation += sdt * pb.linear_velocity.0;
+
+            // pre solve values
+            pb.previous.pre_solve_linear_velocity = pb.linear_velocity.0;
 
             // qprev ← q;
             pb.previous.rotation = pb.transform.rotation;
 
-            // 𝜔 ← 𝜔 + ℎ I−1 (𝜏ext − (𝜔 × (I𝜔)));
-            let angular_velocity = &mut *pb.angular_velocity;
-            let torque = pb.inertia_tensor.0 * angular_velocity.0;
-            let cross_product = angular_velocity.0.cross(torque);
+            // (𝜔 × (I𝜔))
+            let cross_product = pb
+                .angular_velocity
+                .0
+                .cross(pb.inertia_tensor.0 * pb.angular_velocity.0);
             let external_torque = Vec3::ZERO;
-            angular_velocity.0 += sdt * pb.inverse_inertia_tensor.0 * (external_torque - cross_product);
-            info!("angular_velocity: {:?}", angular_velocity.0);
+            // 𝜔 ← 𝜔 + ℎ I−1 (𝜏ext − (𝜔 × (I𝜔)));
+            pb.angular_velocity.0 +=
+                sdt * pb.inverse_inertia_tensor.0 * (external_torque - cross_product);
 
             // q ← q + ℎ 21 [𝜔 𝑥 , 𝜔 𝑦 , 𝜔 𝑧 , 0] q;
-            let scaled_angular_velocity = sdt * 0.5 * angular_velocity.0;
+            let scaled_angular_velocity = sdt * 0.5 * pb.angular_velocity.0;
             if scaled_angular_velocity != Vec3::ZERO {
-                info!("scaled_angular_velocity: {:?}", scaled_angular_velocity);
-                let rotation_change = Quat::from_xyzw(scaled_angular_velocity.x, scaled_angular_velocity.y, scaled_angular_velocity.z, 0.0) * pb.transform.rotation;
-                info!("rotation_change: {:?}", rotation_change);
-                pb.transform.rotation *= rotation_change;
+                let rotation_change = Quat::from_xyzw(
+                    scaled_angular_velocity.x,
+                    scaled_angular_velocity.y,
+                    scaled_angular_velocity.z,
+                    0.0,
+                ) * pb.transform.rotation;
+                pb.transform.rotation *= rotation_change; // TODO: this is not an add
+                                                          // q ← q/|q|;
+                pb.transform.rotation = pb.transform.rotation.normalize();
             }
-            
-            // q ← q/|q|;
-            pb.transform.rotation = pb.transform.rotation.normalize();
         }
 
         // Solve positions
@@ -198,42 +212,78 @@ fn simulate(
                         pb2.transform.translation,
                         *radius_b,
                     ) {
-                        // Solve position constraints for sphere-sphere collision
-                        let ra = contact.point - pb1.transform.translation;
-                        let rb = contact.point - pb2.transform.translation;
-
-                        let k_inv_mass = pb1.inverse_mass.0 + pb2.inverse_mass.0;
-                        let ra_cross_n = ra.cross(contact.normal);
-                        let rb_cross_n = rb.cross(contact.normal);
-                        let k_inv_inertia = ra_cross_n.dot(pb1.inverse_inertia_tensor.0 * ra_cross_n) + rb_cross_n.dot(pb2.inverse_inertia_tensor.0 * rb_cross_n);
-
-                        let impulse_magnitude = contact.penetration / (k_inv_mass + k_inv_inertia);
-                        let impulse = impulse_magnitude * contact.normal;
-        
-                        // Update linear velocities
-                        pb1.linear_velocity.0 -= pb1.inverse_mass.0 * impulse;
-                        pb2.linear_velocity.0 += pb2.inverse_mass.0 * impulse;
-
-
-                        // Update angular velocities
-                        pb1.angular_velocity.0 -= pb1.inverse_inertia_tensor.0 * ra.cross(impulse);
-                        pb2.angular_velocity.0 += pb2.inverse_inertia_tensor.0 * rb.cross(impulse);
-
-                        // Update positions
-                        pb1.transform.translation -= pb1.inverse_mass.0 * impulse;
-                        pb2.transform.translation += pb2.inverse_mass.0 * impulse;
+                        constrain_body_positions(
+                            &mut pb1.transform,
+                            &mut pb2.transform,
+                            &pb1.inverse_mass,
+                            &pb2.inverse_mass,
+                            contact.normal,
+                            contact.penetration_depth,
+                        );
+                        contacts.push((pb1.entity, pb2.entity, contact));
                     }
                 }
-                (Collider::Sphere { radius }, Collider::Box { size }) => todo!(),
-                (Collider::Box { size }, Collider::Sphere { radius }) => todo!(),
-                (Collider::Box { size: size_a }, Collider::Box { size: size_b }) => todo!(),
+                (Collider::Sphere { radius }, Collider::Box { size: box_size }) => {
+                    if let Some(contact) = sphere_box_intersect(
+                        pb1.transform.translation,
+                        *radius,
+                        pb2.transform.translation,
+                        *box_size,
+                    ) {
+                        constrain_body_positions(
+                            &mut pb1.transform,
+                            &mut pb2.transform,
+                            &pb1.inverse_mass,
+                            &pb2.inverse_mass,
+                            contact.normal,
+                            contact.penetration_depth,
+                        );
+                        contacts.push((pb1.entity, pb2.entity, contact));
+                    }
+                }
+                (Collider::Box { size }, Collider::Sphere { radius }) => { 
+                    if let Some(contact) = sphere_box_intersect(
+                        pb1.transform.translation,
+                        *radius,
+                        pb2.transform.translation,
+                        *size,
+                    ) {
+                        constrain_body_positions(
+                            &mut pb1.transform,
+                            &mut pb2.transform,
+                            &pb1.inverse_mass,
+                            &pb2.inverse_mass,
+                            contact.normal,
+                            contact.penetration_depth,
+                        );
+                        contacts.push((pb1.entity, pb2.entity, contact));
+                    }
+                },
+                (Collider::Box { size: size_a }, Collider::Box { size: size_b }) => {
+                    if let Some(contact) = box_box_intersect(
+                        pb1.transform.translation,
+                        *size_a,
+                        pb2.transform.translation,
+                        *size_b,
+                    ) {
+                        constrain_body_positions(
+                            &mut pb1.transform,
+                            &mut pb2.transform,
+                            &pb1.inverse_mass,
+                            &pb2.inverse_mass,
+                            contact.normal,
+                            contact.penetration_depth,
+                        );
+                        contacts.push((pb1.entity, pb2.entity, contact));
+                    }
+                },
             }
         }
 
         for mut pb in query.iter_mut() {
             if pb.inverse_mass.0 == 0. {
                 continue;
-            }     
+            }
 
             // Update linear velocity
             pb.linear_velocity.0 = (pb.transform.translation - pb.previous.translation) / sdt;
@@ -241,17 +291,55 @@ fn simulate(
             // Update angular velocity
             let delta_rot = pb.transform.rotation * pb.previous.rotation.inverse();
             let delta_rot_vec = Vec3::new(delta_rot.x, delta_rot.y, delta_rot.z);
-            pb.angular_velocity.0 = 2.0 * (if delta_rot.w >= 0.0 { delta_rot_vec } else { -delta_rot_vec }) / sdt;
+            pb.angular_velocity.0 =
+                2.0 * (if delta_rot.w >= 0.0 {
+                    delta_rot_vec
+                } else {
+                    -delta_rot_vec
+                }) / sdt;
+        }
+        // Solve velocities
+        for (e1, e2, contact) in contacts.iter() {
+            let [mut pb1, mut pb2] = query.get_many_mut([*e1, *e2]).unwrap();
+
+            let n = (pb2.transform.translation - pb1.transform.translation).normalize();
+            let pre_solve_relative_vel =
+                pb1.previous.pre_solve_linear_velocity - pb2.previous.pre_solve_linear_velocity;
+            let pre_solve_normal_vel = Vec3::dot(pre_solve_relative_vel, n);
+
+            let relative_vel = pb1.linear_velocity.0 - pb2.linear_velocity.0;
+            let normal_vel = Vec3::dot(relative_vel, n);
+            let restitution = (pb1.restitution.0 + pb2.restitution.0) / 2.;
+
+            let w_sum = pb1.inverse_mass.0 + pb2.inverse_mass.0;
+
+            pb1.linear_velocity.0 +=
+                n * (-normal_vel - restitution * pre_solve_normal_vel) * pb1.inverse_mass.0 / w_sum;
+            pb2.linear_velocity.0 -=
+                n * (-normal_vel - restitution * pre_solve_normal_vel) * pb2.inverse_mass.0 / w_sum;
         }
     }
 
-    info!("Physics took: {:?}", t0.elapsed());
+    // info!("Physics took: {:?}", t0.elapsed());
 }
 
 pub struct Contact {
-    pub point: Vec3,
     pub normal: Vec3,
-    pub penetration: f32,
+    pub penetration_depth: f32,
+}
+
+fn constrain_body_positions(
+    trans_a: &mut Transform,
+    trans_b: &mut Transform,
+    inv_mass_a: &InverseMass,
+    inv_mass_b: &InverseMass,
+    n: Vec3,
+    penetration_depth: f32,
+) {
+    let w_sum = inv_mass_a.0 + inv_mass_b.0;
+    let pos_impulse = n * (-penetration_depth / w_sum);
+    trans_a.translation += pos_impulse * inv_mass_a.0;
+    trans_b.translation -= pos_impulse * inv_mass_b.0;
 }
 
 pub fn sphere_sphere_intersect(
@@ -265,14 +353,90 @@ pub fn sphere_sphere_intersect(
     let ab_sqr_len = ab.length_squared();
     if ab_sqr_len < combined_radius * combined_radius {
         let ab_length = ab_sqr_len.sqrt();
-        let penetration = combined_radius - ab_length;
+        let penetration_depth = combined_radius - ab_length;
         let normal = ab / ab_length;
         Some(Contact {
-            point: pos_a + normal * (radius_a - penetration * 0.5),
             normal,
-            penetration,
+            penetration_depth,
         })
     } else {
         None
+    }
+}
+
+pub fn sphere_box_intersect(
+    pos_a: Vec3,
+    radius_a: f32,
+    pos_b: Vec3,
+    size_b: Vec3,
+) -> Option<Contact> {
+    let box_to_sphere = pos_a - pos_b;
+    let box_to_sphere_abs = box_to_sphere.abs();
+    let half_extents = size_b / 2.;
+    let corner_to_center = box_to_sphere_abs - half_extents;
+    let r = radius_a;
+
+    if corner_to_center.x > r || corner_to_center.y > r || corner_to_center.z > r {
+        return None;
+    }
+
+    let s = box_to_sphere.signum();
+
+    let (normal, penetration_depth) = if corner_to_center.x > 0.
+        && corner_to_center.y > 0.
+        && corner_to_center.z > 0.
+    {
+        // Corner case
+        let corner_to_center_sqr = corner_to_center.length_squared();
+        if corner_to_center_sqr > r * r {
+            return None;
+        }
+        let corner_dist = corner_to_center_sqr.sqrt();
+        let penetration = r - corner_dist;
+        let n = corner_to_center / corner_dist * -s;
+        (n, penetration)
+    } else if corner_to_center.x > corner_to_center.y && corner_to_center.x > corner_to_center.z {
+        // Closer to X-axis edge
+        (Vec3::X * -s.x, -corner_to_center.x + r)
+    } else if corner_to_center.y > corner_to_center.x && corner_to_center.y > corner_to_center.z {
+        // Closer to Y-axis edge
+        (Vec3::Y * -s.y, -corner_to_center.y + r)
+    } else {
+        // Closer to Z-axis edge
+        (Vec3::Z * -s.z, -corner_to_center.z + r)
+    };
+
+    Some(Contact {
+        normal,
+        penetration_depth,
+    })
+}
+
+pub fn box_box_intersect(pos_a: Vec3, size_a: Vec3, pos_b: Vec3, size_b: Vec3) -> Option<Contact> {
+    let half_a = size_a / 2.;
+    let half_b = size_b / 2.;
+    let ab = pos_b - pos_a;
+    let overlap = (half_a + half_b) - ab.abs(); // exploit symmetry
+
+    if overlap.x < 0. || overlap.y < 0. || overlap.z < 0. {
+        None
+    } else if overlap.x < overlap.y && overlap.x < overlap.z {
+        // closer to X-axis edge
+        Some(Contact {
+            penetration_depth: overlap.x,
+            normal: Vec3::X * ab.x.signum(),
+        })
+    } else if overlap.y < overlap.x && overlap.y < overlap.z {
+        // closer to Y-axis edge
+        Some(Contact {
+            penetration_depth: overlap.y,
+            normal: Vec3::Y * ab.y.signum(),
+        })
+    } else {
+        // closer to Z-axis edge
+        Some(Contact {
+            penetration_depth: overlap.z,
+            normal: Vec3::Z * ab.z.signum(),
+        })
     }
 }

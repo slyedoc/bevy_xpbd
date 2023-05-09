@@ -12,7 +12,7 @@ impl Plugin for CameraControllerPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app
         .init_resource::<CameraControls>()
-        .add_system(update_camera_controller);
+        .add_systems(Update, update_camera_controller);
     }
 }
 

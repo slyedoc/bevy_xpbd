@@ -16,6 +16,7 @@ fn main() {
         .run();
 }
 
+const COUNT: usize = 10;
 pub fn setup_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -45,25 +46,22 @@ pub fn setup_scene(
         Name::new("Camera"),
     ));
 
-    let ground_radius = 100.;
+    let ground_size = 100.;
     commands.spawn((
         PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::UVSphere {
-                radius: ground_radius,
-                ..default()            
-            })),
+            mesh: meshes.add(Mesh::from(shape::Box::new( ground_size, 1., ground_size))),
             material: materials.add(StandardMaterial {
                 base_color: Color::DARK_GREEN,
                 ..default()
             }),
             transform: Transform {
-                translation: Vec3::new(0., -ground_radius, 0.),
+                translation: Vec3::new(0., -0.5, 0.),
                 ..default()
             },
             ..default()
         },
         PhysicsBundle {
-            collider: Collider::new_sphere(ground_radius),
+            collider: Collider::new_box(ground_size, 1., ground_size),
             mass: Mass::Static,
             ..default()
         },
@@ -79,7 +77,6 @@ pub fn setup(
     asset_server: Res<AssetServer>,
 ) {
     let radius = 0.5;
-    let count = 4;
 
     let texture = asset_server.load("checker_red.png");
     let mat = materials.add(StandardMaterial {
@@ -93,9 +90,9 @@ pub fn setup(
         ..default()
     }));
 
-    for x in 0..count {
-        for y in 0..count {
-            for z in 0..count {
+    for x in 0..COUNT {
+        for y in 0..COUNT {
+            for z in 0..COUNT {
                 commands.spawn((
                     PbrBundle {
                         mesh: mesh.clone(),
