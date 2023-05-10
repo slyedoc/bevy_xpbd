@@ -1,12 +1,14 @@
 mod components;
 mod config;
+mod intersect;
 mod spatial_hash;
 
 pub use components::*;
 pub use config::*;
+pub use intersect::*;
+use spatial_hash::SpatialHash;
 
 use bevy::{ecs::query::WorldQuery, prelude::*};
-use spatial_hash::SpatialHash;
 
 #[derive(Bundle, Default)]
 pub struct PhysicsBundle {
@@ -48,7 +50,7 @@ pub struct XpbdPlugin {
 impl Default for XpbdPlugin {
     fn default() -> Self {
         Self {
-            sub_steps: 10,
+            sub_steps: 5,
             gravity: Vec3::new(0., -9.81, 0.),
         }
     }
@@ -129,13 +131,14 @@ fn simulate(
     config: Res<PhysicsConfig>,
     mut spatial_hash: ResMut<SpatialHash>,
     mut gizmos: Gizmos,
+    mut contacts: Local<Vec<(Entity, Entity, Contact)>>,
 ) {
     let sdt = time.delta_seconds() / config.sub_steps as f32;
     if sdt == 0. {
         return;
     }
 
-    // Build spatial hash
+    // Build possable collision pairs
     spatial_hash.clear();
     for pb in query.iter() {
         let radius =
@@ -150,15 +153,11 @@ fn simulate(
     }
     let collision_pairs = spatial_hash.get_collision_pairs();
 
-    let mut contacts: Vec<(Entity, Entity, Contact)> = Vec::new();
-
     for _ in 0..config.sub_steps {
         contacts.clear();
-        for mut pb in query.iter_mut() {
-            if pb.inverse_mass.0 == 0. {
-                continue;
-            }
 
+        // Integrate
+        for mut pb in query.iter_mut().filter(|x| x.inverse_mass.0 != 0.) {
             // update linear velocity and position
             pb.previous.translation = pb.transform.translation;
             pb.linear_velocity.0 += sdt * (config.gravity * pb.inverse_mass.0);
@@ -241,7 +240,7 @@ fn simulate(
                         contacts.push((pb1.entity, pb2.entity, contact));
                     }
                 }
-                (Collider::Box { size }, Collider::Sphere { radius }) => { 
+                (Collider::Box { size }, Collider::Sphere { radius }) => {
                     if let Some(contact) = sphere_box_intersect(
                         pb1.transform.translation,
                         *radius,
@@ -258,7 +257,7 @@ fn simulate(
                         );
                         contacts.push((pb1.entity, pb2.entity, contact));
                     }
-                },
+                }
                 (Collider::Box { size: size_a }, Collider::Box { size: size_b }) => {
                     if let Some(contact) = box_box_intersect(
                         pb1.transform.translation,
@@ -276,15 +275,12 @@ fn simulate(
                         );
                         contacts.push((pb1.entity, pb2.entity, contact));
                     }
-                },
+                }
             }
         }
 
-        for mut pb in query.iter_mut() {
-            if pb.inverse_mass.0 == 0. {
-                continue;
-            }
-
+        // Update velocities
+        for mut pb in query.iter_mut().filter(|x| x.inverse_mass.0 != 0.) {
             // Update linear velocity
             pb.linear_velocity.0 = (pb.transform.translation - pb.previous.translation) / sdt;
 
@@ -298,34 +294,31 @@ fn simulate(
                     -delta_rot_vec
                 }) / sdt;
         }
+
         // Solve velocities
         for (e1, e2, contact) in contacts.iter() {
             let [mut pb1, mut pb2] = query.get_many_mut([*e1, *e2]).unwrap();
 
-            let n = (pb2.transform.translation - pb1.transform.translation).normalize();
             let pre_solve_relative_vel =
                 pb1.previous.pre_solve_linear_velocity - pb2.previous.pre_solve_linear_velocity;
-            let pre_solve_normal_vel = Vec3::dot(pre_solve_relative_vel, n);
+            let pre_solve_normal_vel = Vec3::dot(pre_solve_relative_vel, contact.normal);
 
             let relative_vel = pb1.linear_velocity.0 - pb2.linear_velocity.0;
-            let normal_vel = Vec3::dot(relative_vel, n);
+            let normal_vel = Vec3::dot(relative_vel, contact.normal);
             let restitution = (pb1.restitution.0 + pb2.restitution.0) / 2.;
 
             let w_sum = pb1.inverse_mass.0 + pb2.inverse_mass.0;
 
-            pb1.linear_velocity.0 +=
-                n * (-normal_vel - restitution * pre_solve_normal_vel) * pb1.inverse_mass.0 / w_sum;
-            pb2.linear_velocity.0 -=
-                n * (-normal_vel - restitution * pre_solve_normal_vel) * pb2.inverse_mass.0 / w_sum;
+            pb1.linear_velocity.0 += contact.normal
+                * (-normal_vel - restitution * pre_solve_normal_vel)
+                * pb1.inverse_mass.0
+                / w_sum;
+            pb2.linear_velocity.0 -= contact.normal
+                * (-normal_vel - restitution * pre_solve_normal_vel)
+                * pb2.inverse_mass.0
+                / w_sum;
         }
     }
-
-    // info!("Physics took: {:?}", t0.elapsed());
-}
-
-pub struct Contact {
-    pub normal: Vec3,
-    pub penetration_depth: f32,
 }
 
 fn constrain_body_positions(
@@ -340,103 +333,4 @@ fn constrain_body_positions(
     let pos_impulse = n * (-penetration_depth / w_sum);
     trans_a.translation += pos_impulse * inv_mass_a.0;
     trans_b.translation -= pos_impulse * inv_mass_b.0;
-}
-
-pub fn sphere_sphere_intersect(
-    pos_a: Vec3,
-    radius_a: f32,
-    pos_b: Vec3,
-    radius_b: f32,
-) -> Option<Contact> {
-    let ab = pos_b - pos_a;
-    let combined_radius = radius_a + radius_b;
-    let ab_sqr_len = ab.length_squared();
-    if ab_sqr_len < combined_radius * combined_radius {
-        let ab_length = ab_sqr_len.sqrt();
-        let penetration_depth = combined_radius - ab_length;
-        let normal = ab / ab_length;
-        Some(Contact {
-            normal,
-            penetration_depth,
-        })
-    } else {
-        None
-    }
-}
-
-pub fn sphere_box_intersect(
-    pos_a: Vec3,
-    radius_a: f32,
-    pos_b: Vec3,
-    size_b: Vec3,
-) -> Option<Contact> {
-    let box_to_sphere = pos_a - pos_b;
-    let box_to_sphere_abs = box_to_sphere.abs();
-    let half_extents = size_b / 2.;
-    let corner_to_center = box_to_sphere_abs - half_extents;
-    let r = radius_a;
-
-    if corner_to_center.x > r || corner_to_center.y > r || corner_to_center.z > r {
-        return None;
-    }
-
-    let s = box_to_sphere.signum();
-
-    let (normal, penetration_depth) = if corner_to_center.x > 0.
-        && corner_to_center.y > 0.
-        && corner_to_center.z > 0.
-    {
-        // Corner case
-        let corner_to_center_sqr = corner_to_center.length_squared();
-        if corner_to_center_sqr > r * r {
-            return None;
-        }
-        let corner_dist = corner_to_center_sqr.sqrt();
-        let penetration = r - corner_dist;
-        let n = corner_to_center / corner_dist * -s;
-        (n, penetration)
-    } else if corner_to_center.x > corner_to_center.y && corner_to_center.x > corner_to_center.z {
-        // Closer to X-axis edge
-        (Vec3::X * -s.x, -corner_to_center.x + r)
-    } else if corner_to_center.y > corner_to_center.x && corner_to_center.y > corner_to_center.z {
-        // Closer to Y-axis edge
-        (Vec3::Y * -s.y, -corner_to_center.y + r)
-    } else {
-        // Closer to Z-axis edge
-        (Vec3::Z * -s.z, -corner_to_center.z + r)
-    };
-
-    Some(Contact {
-        normal,
-        penetration_depth,
-    })
-}
-
-pub fn box_box_intersect(pos_a: Vec3, size_a: Vec3, pos_b: Vec3, size_b: Vec3) -> Option<Contact> {
-    let half_a = size_a / 2.;
-    let half_b = size_b / 2.;
-    let ab = pos_b - pos_a;
-    let overlap = (half_a + half_b) - ab.abs(); // exploit symmetry
-
-    if overlap.x < 0. || overlap.y < 0. || overlap.z < 0. {
-        None
-    } else if overlap.x < overlap.y && overlap.x < overlap.z {
-        // closer to X-axis edge
-        Some(Contact {
-            penetration_depth: overlap.x,
-            normal: Vec3::X * ab.x.signum(),
-        })
-    } else if overlap.y < overlap.x && overlap.y < overlap.z {
-        // closer to Y-axis edge
-        Some(Contact {
-            penetration_depth: overlap.y,
-            normal: Vec3::Y * ab.y.signum(),
-        })
-    } else {
-        // closer to Z-axis edge
-        Some(Contact {
-            penetration_depth: overlap.z,
-            normal: Vec3::Z * ab.z.signum(),
-        })
-    }
 }

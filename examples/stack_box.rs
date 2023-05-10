@@ -96,9 +96,9 @@ pub fn setup(
                         material: mat.clone(),
                         transform: Transform {
                             translation: Vec3::new(
-                                size * 1.05 * x as f32,
-                                size * 1.05 * y as f32 + 5.,
-                                size * 1.05 * z as f32,
+                                size * 1.01 * x as f32,
+                                size * 1.01 * y as f32 + 5.,
+                                size * 1.01 * z as f32,
                             ),
                             ..default()
                         },
