@@ -5,5 +5,5 @@ pub struct Previous {
     pub(crate) translation: Vec3,
     pub(crate) rotation: Quat,
     pub(crate) pre_solve_linear_velocity: Vec3,
-    // pub(crate) _angular_velocity: Vec3,
+    pub(crate) pre_solve_angular_velocity: Vec3,
 }

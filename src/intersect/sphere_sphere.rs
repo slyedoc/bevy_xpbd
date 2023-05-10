@@ -15,6 +15,8 @@ pub fn sphere_sphere_intersect(
         let penetration_depth = combined_radius - ab_length;
         let normal = ab / ab_length;
         Some(Contact {
+            point1: pos_a + normal * radius_a,
+            point2: pos_b - normal * radius_b,
             normal,
             penetration_depth,
         })

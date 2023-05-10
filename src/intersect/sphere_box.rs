@@ -1,6 +1,20 @@
 use super::Contact;
 use bevy::prelude::*;
 
+#[inline]
+pub fn box_sphere_intersect(
+    pos_a: Vec3,
+    size_a: Vec3,
+    pos_b: Vec3,
+    radius_b: f32,
+) -> Option<Contact> {
+    if let Some(contact) = sphere_box_intersect(pos_b, radius_b, pos_a, size_a) {
+        Some(contact.swap())
+    } else {
+        None
+    }
+}
+
 pub fn sphere_box_intersect(
     pos_a: Vec3,
     radius_a: f32,
@@ -47,6 +61,8 @@ pub fn sphere_box_intersect(
         return None;
     }
     Some(Contact {
+        point1: pos_a - normal * radius_a,
+        point2: pos_b + normal * half_extents,
         normal,
         penetration_depth,
     })
